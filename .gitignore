@@ -1,0 +1,12 @@
+data/raw/
+data/processed/
+data/*.db
+figures/
+reports/*.html
+reports/*.pdf
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+renv/library/
+renv/staging/

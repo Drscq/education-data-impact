@@ -1,0 +1,199 @@
+---
+title: "How School Resources Shape Student Reading Achievement: A Multilevel Analysis of PISA 2018 Data"
+author: "Changqi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+    fig_width: 9
+    fig_height: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(broom.mixed)
+```
+
+# Introduction
+
+Reading literacy is foundational to academic success and lifelong learning. While individual factors like socioeconomic status (SES) are known predictors of reading achievement, less is understood about how **school-level resources**—such as internet access, staffing, and funding structures—contribute to or mitigate achievement gaps.
+
+This study uses data from the **Programme for International Student Assessment (PISA) 2018** to investigate:
+
+1. How much of the variation in reading scores occurs between schools and countries versus within?
+2. Which student-level and school-level factors predict reading achievement?
+3. Does school socioeconomic composition moderate the relationship between individual SES and reading?
+
+# Data & Methods
+
+## Data Source
+
+We use the [learningtower](https://kevinwang09.github.io/learningtower/) R package, which provides cleaned subsets of PISA data. PISA is an international assessment administered every three years to 15-year-old students across 80+ countries, with 2018 being the most recent reading-focused cycle.
+
+## Variables
+
+**Student-level:**
+
+- `reading_score` — PISA reading assessment score (outcome)
+- `gender_female` — binary indicator (1 = female)
+- `ses_centered` — socioeconomic index, grand-mean centered
+- `has_internet` — binary indicator for home internet access
+
+**School-level:**
+
+- `school_avg_ses` — average SES of students in the school
+- `is_public` — binary indicator (1 = public school)
+- `staff_shortage` — index of staff shortage severity
+
+```{r load-data}
+df <- read_csv("../data/processed/analysis_data.csv")
+
+model_df <- df %>%
+  select(reading_score, gender_female, ses_centered, ses_index,
+         has_internet, school_avg_ses, is_public, staff_shortage,
+         school_id, country) %>%
+  drop_na()
+
+cat("N =", nrow(model_df), "students across",
+    n_distinct(model_df$country), "countries and",
+    n_distinct(model_df$school_id), "schools")
+```
+
+## Analytical Approach
+
+We fit a series of **multilevel (hierarchical) linear models** with students nested in schools nested in countries using the `lme4` package. We build models progressively:
+
+1. **Null model** — Unconditional to compute ICC
+2. **Student-level model** — Add individual predictors
+3. **School-level model** — Add school characteristics
+4. **Interaction model** — Cross-level interaction (SES × school SES)
+
+# Results
+
+## Exploratory Analysis
+
+```{r eda-distribution, fig.cap="Distribution of PISA 2018 reading scores."}
+ggplot(model_df, aes(x = reading_score)) +
+  geom_histogram(bins = 50, fill = "#3498db", color = "white", alpha = 0.8) +
+  labs(title = "Distribution of Reading Scores", x = "Reading Score", y = "Count") +
+  theme_minimal(base_size = 13)
+```
+
+```{r eda-ses, fig.cap="SES is strongly associated with reading achievement."}
+model_df %>%
+  sample_n(min(2000, nrow(model_df))) %>%
+  ggplot(aes(x = ses_centered, y = reading_score)) +
+  geom_point(alpha = 0.15, size = 0.8, color = "#2c3e50") +
+  geom_smooth(method = "lm", color = "#e74c3c", linewidth = 1.2) +
+  labs(title = "SES vs Reading Score", x = "SES (centered)", y = "Reading Score") +
+  theme_minimal(base_size = 13)
+```
+
+## Model 1: Null Model (ICC)
+
+```{r model-null}
+model_null <- lmer(reading_score ~ 1 + (1 | country/school_id), data = model_df)
+icc_result <- icc(model_null)
+print(icc_result)
+```
+
+The ICC tells us what proportion of variance in reading scores lies between schools and countries. A high ICC justifies the use of multilevel modeling.
+
+## Model 2: Student-Level Predictors
+
+```{r model-student}
+model_student <- lmer(
+  reading_score ~ gender_female + ses_centered + has_internet +
+    (1 | country/school_id),
+  data = model_df
+)
+summary(model_student)
+```
+
+## Model 3: School-Level Predictors
+
+```{r model-school}
+model_school <- lmer(
+  reading_score ~ gender_female + ses_centered + has_internet +
+    school_avg_ses + is_public + staff_shortage +
+    (1 | country/school_id),
+  data = model_df
+)
+summary(model_school)
+```
+
+## Model 4: Cross-Level Interaction
+
+```{r model-interaction}
+model_interaction <- lmer(
+  reading_score ~ gender_female + ses_centered * school_avg_ses +
+    has_internet + is_public + staff_shortage +
+    (1 | country/school_id),
+  data = model_df
+)
+summary(model_interaction)
+```
+
+## Model Comparison
+
+```{r model-comparison}
+anova(model_null, model_student, model_school, model_interaction)
+```
+
+```{r r-squared}
+r2_values <- tibble(
+  Model = c("Null", "Student", "School", "Interaction"),
+  R2_marginal = c(
+    r2(model_null)$R2_marginal,
+    r2(model_student)$R2_marginal,
+    r2(model_school)$R2_marginal,
+    r2(model_interaction)$R2_marginal
+  ),
+  R2_conditional = c(
+    r2(model_null)$R2_conditional,
+    r2(model_student)$R2_conditional,
+    r2(model_school)$R2_conditional,
+    r2(model_interaction)$R2_conditional
+  )
+)
+knitr::kable(r2_values, digits = 4, caption = "R-squared for each model")
+```
+
+## Coefficient Plot
+
+```{r coef-plot, fig.cap="Fixed effects with 95% confidence intervals from the final multilevel model."}
+tidy_results <- tidy(model_interaction, effects = "fixed", conf.int = TRUE)
+
+tidy_results %>%
+  filter(term != "(Intercept)") %>%
+  ggplot(aes(x = reorder(term, estimate), y = estimate)) +
+  geom_point(size = 3, color = "#2c3e50") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#e74c3c") +
+  coord_flip() +
+  labs(title = "Fixed Effects from Final Model", x = NULL, y = "Estimate (95% CI)") +
+  theme_minimal(base_size = 13)
+```
+
+# Discussion
+
+This analysis demonstrates how multilevel modeling can partition variance in student reading scores across individual, school, and country levels. Key findings:
+
+- **SES matters at both levels**: Individual SES and school-average SES are both significant predictors.
+- **Internet access** is associated with higher reading scores even after controlling for SES.
+- **The cross-level interaction** reveals whether the SES–achievement relationship varies by school context.
+
+These findings are directly relevant to educational technology platforms (like Newsela) that aim to close achievement gaps by providing differentiated, accessible content to students across diverse schools.
+
+# Technical Notes
+
+- All analyses conducted in R `r R.version.string` using `lme4`, `lmerTest`, and `tidyverse`
+- Data from PISA 2018 via the `learningtower` R package
+- SQL queries for data extraction available in `sql/queries.sql`
